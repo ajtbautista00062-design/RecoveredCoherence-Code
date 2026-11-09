@@ -29,18 +29,27 @@ loss threshold, tol = RECOVERY_TOLERANCE, k = LATE_POST_CONFIRMATIONS)
   signal observability gate fails (B must exceed tol + H + margin and 3 x noise).
 - Disturbed when the observed event-pair loss B - E >= H, or the modeled level
   loss -beta2 >= H confirmed by an observed early-POST deficit >= H.
-- Disturbed zones: late = median of last k POST pairs, trough = min(E, first POST)
-    late >= B - tol                         -> 1 Coherence recovered
-    late - trough >= MIN_RECOVERY_IMPROVEMENT -> 2 Partially recovered
-    otherwise                               -> 3 Not recovered / further degraded
-- Not disturbed but early AND late POST deficits persist (early >= H, late > tol)
-                                            -> 3 (post-event decline, evidence 3)
-- Otherwise                                 -> 4 No detectable event-associated loss
+- late = median of the last k POST pairs; trough = post-event low point, the lowest
+  of E and every POST pair before the last (ZONAL_TROUGH_FROM_POST_LOW_POINT);
+  modeled gain = fitted POST segment at the last minus at the first POST date;
+  imp = MIN_RECOVERY_IMPROVEMENT.
+- Disturbed zones:
+    late >= B - tol                                  -> 1 Coherence recovered
+    late - trough >= imp, or modeled gain >= imp with
+    late - trough >= margin (ZONAL_PARTIAL_FROM_MODELED_TREND)
+                                                     -> 2 Partially recovered
+    otherwise                                        -> 3 Not recovered / further degraded
+- Delayed loss (not disturbed, but early >= H below B and late > tol below B):
+    improved by the same rule as above (ZONAL_PARTIAL_FROM_DELAYED_LOSS)
+                                                     -> 2 Partially recovered
+    otherwise                                        -> 3 (post-event decline)
+  Both carry evidence code 3.
+- Otherwise                                          -> 4 No detectable event-associated loss
 
-Zonal RRI value = (late - trough) / (B - trough) for disturbed zones. The zonal RRI
-interpretation classes use the same rules as the ITSA classes: ITSA 1 -> RRI 4
-(or 5 when late > B + tol), ITSA 2 -> RRI 3, ITSA 3 -> RRI 2 (or 1 when late is
-below the trough, or for post-event decline), ITSA 4/5/0 -> RRI 0.
+Zonal RRI value = (late - trough) / (B - trough) for disturbed and delayed-loss
+zones. The zonal RRI interpretation classes use the same rules as the ITSA classes:
+ITSA 1 -> RRI 4 (or 5 when late > B + tol), ITSA 2 -> RRI 3, ITSA 3 -> RRI 2 (or 1
+when late is below min(E, first POST), or for post-event decline), ITSA 4/5/0 -> RRI 0.
 
 Differences from the original pixel/object rules are deliberate and documented:
 no indecision margins between adjacent classes, the observed event pair counts
@@ -86,7 +95,9 @@ QUALITY = {1: "event-pair-only disturbance (weather-sensitive; early POST alread
            4: "resolved at a zone larger than the base zone",
            8: "late coherence exceeds baseline + tolerance",
            16: "source validity semantics unconfirmed",
-           32: "modeled end state disagrees with observed late median"}
+           32: "modeled end state disagrees with observed late median",
+           64: "partial recovery supported by the post-event low point, modeled POST trend "
+               "or delayed loss, not by late - min(E, first POST)"}
 
 COLORS = {
     "class": {0: ("#000000", 0), 1: ("#1a9641", 255), 2: ("#a6d96a", 255), 3: ("#d7191c", 255),
@@ -143,13 +154,19 @@ def classify_series(y, obs, c):
     p = y[post]
     E = y[event[0]]
     early, late = median(p[:k]), median(p[-k:])
+    low_point = bool(setting(c, "ZONAL_TROUGH_FROM_POST_LOW_POINT", True))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        trough = np.fmin(E, p[0])
+        first_trough = np.fmin(E, p[0])
+        # Post-event low point: lowest of the event pair and every POST pair before the
+        # last one, so a dip that deepens after the first POST pair is not missed.
+        trough = np.fmin(E, np.nanmin(p[:-1], axis=0)) if low_point else first_trough
+    trough = np.where(np.isfinite(trough), trough, first_trough)
     slope = b[1] + b[3]
     from .temporal import day_offsets
     days = day_offsets(obs, c.EVENT_ORIGIN)
     modeled_final = b[0] + b[2] + slope * days[post].max()
+    modeled_initial = b[0] + b[2] + slope * days[post].min()
     predictions = b[0] + b[2] + slope * days[post, None]
 
     support = ((fit.pre_count >= c.ITSA_MIN_PRE) & (fit.post_count >= c.ITSA_MIN_POST)
@@ -166,11 +183,26 @@ def classify_series(y, obs, c):
     disturbed_event = usable & (event_loss >= H)
     disturbed_model = usable & ~disturbed_event & (modeled_loss >= H) & (early_deficit >= H)
     disturbed = disturbed_event | disturbed_model
+    improve = c.MIN_RECOVERY_IMPROVEMENT
+    use_model = bool(setting(c, "ZONAL_PARTIAL_FROM_MODELED_TREND", True))
+    use_delayed = bool(setting(c, "ZONAL_PARTIAL_FROM_DELAYED_LOSS", True))
+    observed_gain = late - trough
+    # Fitted POST recovery trend; accepted only when the observed late median is
+    # also above the low point, so the model never overrides the observations.
+    modeled_gain = modeled_final - modeled_initial
+    model_support = use_model & (modeled_gain >= improve) & (observed_gain >= margin)
     recovered = disturbed & (late >= B - tol)
-    partial = disturbed & ~recovered & (late - trough >= c.MIN_RECOVERY_IMPROVEMENT)
+    partial_observed = disturbed & ~recovered & (observed_gain >= improve)
+    partial_model = disturbed & ~recovered & ~partial_observed & model_support
+    partial = partial_observed | partial_model
     not_recovered = disturbed & ~recovered & ~partial
-    decline = usable & ~disturbed & (early_deficit >= H) & (late_deficit > tol)
-    no_loss = usable & ~disturbed & ~decline
+    delayed_loss = usable & ~disturbed & (early_deficit >= H) & (late_deficit > tol)
+    # Delayed (post-event) loss that has since improved by the minimum amount is a
+    # partial recovery rather than a continuing decline.
+    delayed_partial = delayed_loss & use_delayed & ((observed_gain >= improve) | model_support)
+    decline = delayed_loss & ~delayed_partial
+    partial = partial | delayed_partial
+    no_loss = usable & ~disturbed & ~delayed_loss
 
     classes = np.full(n, 5, "uint8")
     reasons = np.zeros(n, "uint8")
@@ -178,7 +210,7 @@ def classify_series(y, obs, c):
     for mask, code in ((recovered, 1), (partial, 2), (not_recovered, 3), (decline, 3), (no_loss, 4)):
         classes[mask] = code
     evidence[disturbed_event], evidence[disturbed_model] = 1, 2
-    evidence[decline], evidence[no_loss] = 3, 4
+    evidence[delayed_loss], evidence[no_loss] = 3, 4
     reasons[~support] = 2
     reasons[support & ~stable] = 3
     reasons[support & stable & ~observable] = 4
@@ -192,9 +224,12 @@ def classify_series(y, obs, c):
     if not c.SOURCE_VALIDITY_CONFIRMED:
         quality[:] |= 16
     quality[usable & (np.abs(modeled_final - late) > c.OBSERVATION_DISAGREEMENT_TOLERANCE)] |= 32
+    # Partial recoveries the original rule (late - min(E, first POST) >= 0.03) missed.
+    quality[partial & ~(disturbed & (late - first_trough >= improve))] |= 64
 
+    loss_zone = disturbed | delayed_loss
     value, _, rri_status, _, _ = calculate(
-        B, trough, late, disturbed, support, stable, np.ones(n, bool), H, no_loss=classes == 4)
+        B, trough, late, loss_zone, support, stable, np.ones(n, bool), H, no_loss=classes == 4)
     rri_status[absent] = 0
     # RRI interpretation classes follow the SAME rules as the zonal ITSA classes, so
     # the two maps agree one-to-one. The numeric RRI value above is unchanged.
@@ -202,8 +237,9 @@ def classify_series(y, obs, c):
     rri_class[recovered & (late > B + tol)] = 5        # coherence exceeding baseline
     rri_class[recovered & (late <= B + tol)] = 4       # return to baseline (within tolerance)
     rri_class[partial] = 3                             # partial coherence recovery
-    rri_class[not_recovered & (late >= trough)] = 2    # no measurable recovery (< MIN_RECOVERY_IMPROVEMENT)
-    rri_class[not_recovered & (late < trough)] = 1     # further coherence degradation
+    # "Further degradation" keeps its original meaning: late below the initial trough.
+    rri_class[not_recovered & (late >= first_trough)] = 2    # no measurable recovery
+    rri_class[not_recovered & (late < first_trough)] = 1     # further coherence degradation
     rri_class[decline] = 1                             # post-event decline without event-pair loss
     metrics = dict(baseline=B, event_value=E, early_post=early, late_post=late, trough=trough,
                    observed_event_loss=event_loss, modeled_level_loss=modeled_loss,

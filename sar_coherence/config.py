@@ -165,3 +165,7 @@ ZONAL_MIN_VALID_PIXELS = 9      # per date; smaller zones defer to the parent zo
 ZONAL_MIN_VALID_FRACTION = 0.5  # per date, of the zone's study pixels
 ZONAL_RESPECT_BARANGAYS = True  # zones never mix two barangays
 ZONAL_SENSITIVITY_BASE_CELLS = (3, 7)
+# Partial recovery evidence (MIN_RECOVERY_IMPROVEMENT is the improvement required)
+ZONAL_TROUGH_FROM_POST_LOW_POINT = True   # trough = lowest of event pair and POST pairs before the last
+ZONAL_PARTIAL_FROM_MODELED_TREND = True   # fitted POST gain also counts if observations rose above the trough
+ZONAL_PARTIAL_FROM_DELAYED_LOSS = True    # delayed (post-event) loss that improved -> Partially recovered

@@ -95,14 +95,22 @@ the class of the finest zone that resolves it. Decision tree per zone:
 
 - Indeterminate: insufficient PRE/POST/event support, unstable fit, or failed observability gate
 - Disturbed: event-pair loss B − E ≥ H, or modeled level loss ≥ H confirmed by early-POST deficit ≥ H
-- Disturbed → late median ≥ B − 0.05: **Recovered**; late − trough ≥ 0.03: **Partial**; else **Not recovered**
-- Not disturbed but early and late POST deficits persist: **Not recovered** (post-event decline)
+- Trough = post-event low point: the lowest of the event pair and every POST pair before the last
+- Disturbed → late median ≥ B − 0.05: **Recovered**; late − trough ≥ 0.03, or fitted POST gain
+  ≥ 0.03 while late is above the trough: **Partial**; else **Not recovered**
+- Delayed loss (no event-pair loss, but early and late POST deficits): improved by the same
+  rule → **Partial**; otherwise **Not recovered** (post-event decline)
 - Otherwise: **No detectable event-associated loss**
 
-Zonal RRI = (late − trough) / (B − trough) for disturbed zones.
+Each partial-recovery rule has a switch in `config.py` (`ZONAL_TROUGH_FROM_POST_LOW_POINT`,
+`ZONAL_PARTIAL_FROM_MODELED_TREND`, `ZONAL_PARTIAL_FROM_DELAYED_LOSS`); quality bit 64 marks
+partial recoveries that `late − min(E, first POST) ≥ 0.03` alone would not show.
+
+Zonal RRI = (late − trough) / (B − trough) for disturbed and delayed-loss zones.
 
 **Simulation result (7 rasters).** Zonal Indeterminate fell from 99.0% to 0.5%
-of study pixels (99.5% reduction); classes 1–3 rose from 5,228 to 373,533 pixels.
+of study pixels (99.5% reduction). Zonal classes: Recovered 225,994, Partially
+recovered 46,853, Not recovered 100,686, No detectable loss 498,743, Indeterminate 4,238 pixels.
 Every barangay exceeded a 91% reduction, and all sensitivity scenarios
 (42/98 m base zones, tolerance 0.03/0.07, loss floor 0.05, no barangay split)
 stayed above 98.9%.

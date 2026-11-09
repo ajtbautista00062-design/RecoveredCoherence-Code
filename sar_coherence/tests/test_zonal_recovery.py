@@ -42,6 +42,25 @@ class ZonalRules(unittest.TestCase):
         self.assertEqual(r.classes.tolist(), [1, 1, 2, 3, 3, 4, 5])
         self.assertEqual(r.metrics["rri_class"].tolist(), [4, 5, 3, 2, 1, 0, 0])
 
+    def test_partial_recovery_evidence(self):
+        P = [.30, .31, .30]
+        cases = (
+            series(P, .15, [.20, .10, .17]),   # rebound from a later POST low point -> 2
+            series(P, .15, [.14, .15, .18]),   # observed +0.025, fitted POST gain >= .03 -> 2
+            series(P, .30, [.34, .18, .25]),   # delayed loss that improved -> 2 (evidence 3)
+            series(P, .30, [.30, .18, .17]),   # delayed loss, no improvement -> 3 (decline)
+        )
+        r = classify_series(np.column_stack(cases), self.obs, settings())
+        self.assertEqual(r.classes.tolist(), [2, 2, 2, 3])
+        self.assertEqual(r.evidence.tolist(), [1, 1, 3, 3])
+        self.assertEqual([bool(q & 64) for q in r.quality], [True, True, True, False])
+        self.assertEqual(r.metrics["rri_class"].tolist(), [3, 3, 3, 1])
+        self.assertAlmostEqual(float(r.metrics["trough"][0]), .10)
+        for flag, idx in (("ZONAL_TROUGH_FROM_POST_LOW_POINT", 0), ("ZONAL_PARTIAL_FROM_MODELED_TREND", 1),
+                          ("ZONAL_PARTIAL_FROM_DELAYED_LOSS", 2)):
+            off = classify_series(np.column_stack(cases), self.obs, settings(**{flag: False}))
+            self.assertEqual(int(off.classes[idx]), 3, flag)
+
     def test_missing_event_is_indeterminate(self):
         y = series([.30, .31, .30], np.nan, [.24, .29, .30])
         r = self.classify(y)
